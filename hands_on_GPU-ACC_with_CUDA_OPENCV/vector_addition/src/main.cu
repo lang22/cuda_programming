@@ -40,7 +40,7 @@ int main(void) {
 	cudaMemcpy(res, res_d, N * sizeof(int), cudaMemcpyDeviceToHost);
 
 	// Display result
-	for(int i = 0; i < 10; ++i) {
+	for (int i = 0; i < 10; ++i) {
 		printf("%d, ", res[i]);
 	}
 	printf("\n");
