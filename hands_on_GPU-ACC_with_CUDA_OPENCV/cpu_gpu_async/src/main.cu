@@ -1,3 +1,7 @@
+// Profile the async-running of GPU and CPU codes
+// Author: Yuting Xie
+// 2022.2.18
+
 #include <stdio.h>
 #include <cuda.h>
 #include <chrono>
