@@ -1,3 +1,7 @@
+// Atomic addition
+// Author: Yuting Xie
+// 2022.2.21
+
 #include <stdio.h>
 
 #define N (10)
