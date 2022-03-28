@@ -57,6 +57,29 @@ __global__ void reduce1(int *nums, int *res) {
 	}
 }
 
+// Optimized with inverse stride index to solve bank conflict
+__global__ void reduce2(int *nums, int *res) {
+	__shared__ int my_part[BlockSize];
+	int bid = blockIdx.x, tid = threadIdx.x;
+
+	// Step1: copy data from GPU global memory to block-shared memory
+	my_part[tid] = nums[bid * blockDim.x + tid];
+	__syncthreads(); // Wait for every thread finish copying
+
+	// Step2: do stride-index reduction from large to small, solve bank conflict!
+	for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+		if (tid + stride < blockDim.x) {
+			my_part[tid] += my_part[tid + stride];
+		}
+		__syncthreads();
+	}
+
+	if (tid == 0) {
+		res[bid] = my_part[0];
+		printf("%d, %d writing %d\n", blockIdx.x, threadIdx.x, my_part[0]);
+	}
+}
+
 int main() {
 	int nums[N];
 	for (int i = 0; i < N; i++) {
@@ -69,9 +92,9 @@ int main() {
 	cudaMalloc((void**)&res_d, sizeof(int) * NumBlock);
 	cudaMemcpy(nums_d, nums, sizeof(int) * N, cudaMemcpyHostToDevice);
 
-	reduce1<<<NumBlock, BlockSize>>>(nums_d, res_d);
+	reduce2<<<NumBlock, BlockSize>>>(nums_d, res_d);
 	cudaDeviceSynchronize(); // Wait the first reduction to finish
-	reduce1<<<1, NumBlock>>>(res_d, res_d);
+	reduce2<<<1, NumBlock>>>(res_d, res_d);
 
 	cudaMemcpy(&res[0], &res_d[0], sizeof(int), cudaMemcpyDeviceToHost);
 
