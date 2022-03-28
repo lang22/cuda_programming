@@ -33,7 +33,7 @@ __global__ void reduce0(int *nums, int *res) {
 	}
 }
 
-// Optimized warp divergence with stride index
+// Optimized with stride index to solve warp divergence
 __global__ void reduce1(int *nums, int *res) {
 	__shared__ int my_part[BlockSize];
 	int bid = blockIdx.x, tid = threadIdx.x;
@@ -42,10 +42,11 @@ __global__ void reduce1(int *nums, int *res) {
 	my_part[tid] = nums[bid * blockDim.x + tid];
 	__syncthreads(); // Wait for every thread finish copying
 
-	// Step2: do tree-based reduction
-	for (int interval = 1; interval <= blockDim.x / 2; interval *= 2) {
-		if (tid % (interval * 2) == 0) {
-			my_part[tid] += my_part[tid + interval];
+	// Step2: do stride-index reduction, solve the Warp Divergence problem!
+	for (int stride = 1; stride <= blockDim.x / 2; stride <<= 1) {
+		int idx = 2 * stride * tid; // idx is the pos which thread_idx is responsible for
+		if (idx < blockDim.x) {
+			my_part[idx] += my_part[idx + stride];
 		}
 		__syncthreads();
 	}
@@ -68,9 +69,9 @@ int main() {
 	cudaMalloc((void**)&res_d, sizeof(int) * NumBlock);
 	cudaMemcpy(nums_d, nums, sizeof(int) * N, cudaMemcpyHostToDevice);
 
-	reduce0<<<NumBlock, BlockSize>>>(nums_d, res_d);
+	reduce1<<<NumBlock, BlockSize>>>(nums_d, res_d);
 	cudaDeviceSynchronize(); // Wait the first reduction to finish
-	reduce0<<<1, NumBlock>>>(res_d, res_d);
+	reduce1<<<1, NumBlock>>>(res_d, res_d);
 
 	cudaMemcpy(&res[0], &res_d[0], sizeof(int), cudaMemcpyDeviceToHost);
 
