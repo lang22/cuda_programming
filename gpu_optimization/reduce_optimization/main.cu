@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define BlockSize (64)
+#define BlockSize (128)
 // For implementation convenience, just keep NumBlock <= BlockSize
 #define NumBlock (64)
 #define N ((BlockSize) * (NumBlock))
@@ -29,7 +29,6 @@ __global__ void reduce0(int *nums, int *res) {
 
 	if (tid == 0) {
 		res[bid] = my_part[0];
-		printf("%d, %d writing %d\n", blockIdx.x, threadIdx.x, my_part[0]);
 	}
 }
 
@@ -53,7 +52,6 @@ __global__ void reduce1(int *nums, int *res) {
 
 	if (tid == 0) {
 		res[bid] = my_part[0];
-		printf("%d, %d writing %d\n", blockIdx.x, threadIdx.x, my_part[0]);
 	}
 }
 
@@ -76,7 +74,6 @@ __global__ void reduce2(int *nums, int *res) {
 
 	if (tid == 0) {
 		res[bid] = my_part[0];
-		printf("%d, %d writing %d\n", blockIdx.x, threadIdx.x, my_part[0]);
 	}
 }
 
@@ -100,7 +97,41 @@ __global__ void reduce3(int *nums, int *res) {
 
 	if (tid == 0) {
 		res[bid] = my_part[0];
-		printf("%d, %d writing %d\n", blockIdx.x, threadIdx.x, my_part[0]);
+	}
+}
+
+// When there are only 32 (exactly one warp) threads left to work, no need to sync cuz they are inherently synced.
+__device__ void last_warp_reduce(volatile int *my_part, int tid) {
+	// Need volatile to avoid instruction rearrangement!
+	my_part[tid] += my_part[tid + 32];
+	my_part[tid] += my_part[tid + 16];
+	my_part[tid] += my_part[tid + 8];
+	my_part[tid] += my_part[tid + 4];
+	my_part[tid] += my_part[tid + 2];
+	my_part[tid] += my_part[tid + 1];
+}
+// Optimized by unfolding the last loops!
+__global__ void reduce4(int *nums, int *res) {
+	__shared__ int my_part[BlockSize];
+	int bid = blockIdx.x, tid = threadIdx.x;
+
+	// Step1: copy data from GPU global memory to block-shared memory and DO ONE SUM UP!
+	int idx = bid * blockDim.x + tid;
+	my_part[tid] = nums[idx] + nums[idx + blockDim.x * gridDim.x];
+	__syncthreads(); // Wait for every thread finish copying
+
+	// Step2: do stride-index reduction from large to small until there are <= one warp of threads!
+	for (int stride = blockDim.x / 2; stride > 32; stride >>= 1) {
+		if (tid + stride < blockDim.x) {
+			my_part[tid] += my_part[tid + stride];
+		}
+		__syncthreads();
+	}
+
+	// Step3: unfold the last loops w/i a warp
+	last_warp_reduce(my_part, tid);
+	if (tid == 0) {
+		res[bid] = my_part[0];
 	}
 }
 
@@ -122,9 +153,9 @@ int main() {
 //	reduce2<<<1, NumBlock>>>(res_d, res_d);
 
 	// For reduce3 and reduce4
-	reduce3<<<NumBlock, BlockSize / 2>>>(nums_d, res_d);
+	reduce4<<<NumBlock, BlockSize / 2>>>(nums_d, res_d);
 	cudaDeviceSynchronize();
-	reduce3<<<1, NumBlock / 2>>>(res_d, res_d);
+	reduce4<<<1, NumBlock / 2>>>(res_d, res_d);
 
 	cudaMemcpy(&res[0], &res_d[0], sizeof(int), cudaMemcpyDeviceToHost);
 
