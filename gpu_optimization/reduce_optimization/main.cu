@@ -129,9 +129,49 @@ __global__ void reduce4(int *nums, int *res) {
 	}
 
 	// Step3: unfold the last loops w/i a warp
-	last_warp_reduce(my_part, tid);
+	if (tid < 2 * 32) {
+		last_warp_reduce(my_part, tid);
+	}
 	if (tid == 0) {
 		res[bid] = my_part[0];
+	}
+}
+
+// Use shuffle instruction to avoid visiting shared memory in last warp of thread.
+__device__ int last_warp_reduce_shuffle(volatile int sum) {
+	// Why start from 16?
+	// Cuz we only have 32 threads (one warp) now, and the first sum-up was already done at attr-pass
+	sum += __shfl_down(sum, 16, 32);
+	sum += __shfl_down(sum, 8, 32);
+	sum += __shfl_down(sum, 4, 32);
+	sum += __shfl_down(sum, 2, 32);
+	sum += __shfl_down(sum, 1, 32);
+	return sum;
+}
+// Optimized by unfolding the last loops!
+__global__ void reduce5(int *nums, int *res) {
+	__shared__ int my_part[BlockSize];
+	int bid = blockIdx.x, tid = threadIdx.x;
+
+	// Step1: copy data from GPU global memory to block-shared memory and DO ONE SUM UP!
+	int idx = bid * blockDim.x + tid;
+	my_part[tid] = nums[idx] + nums[idx + blockDim.x * gridDim.x];
+	__syncthreads(); // Wait for every thread finish copying
+
+	// Step2: do stride-index reduction from large to small until there are <= one warp of threads!
+	for (int stride = blockDim.x / 2; stride > 32; stride >>= 1) {
+		if (tid + stride < blockDim.x) {
+			my_part[tid] += my_part[tid + stride];
+		}
+		__syncthreads();
+	}
+
+	// Step3: unfold the last loops w/i a warp
+	if (tid < 32) {
+		int sum = last_warp_reduce_shuffle(my_part[tid] + my_part[tid + 32]);
+		if (tid == 0) {
+			res[bid] = sum;
+		}
 	}
 }
 
@@ -152,10 +192,10 @@ int main() {
 //	cudaDeviceSynchronize(); // Wait the first reduction to finish
 //	reduce2<<<1, NumBlock>>>(res_d, res_d);
 
-	// For reduce3 and reduce4
-	reduce4<<<NumBlock, BlockSize / 2>>>(nums_d, res_d);
+	// For reduce3, reduce4 and reduce5
+	reduce5<<<NumBlock, BlockSize / 2>>>(nums_d, res_d);
 	cudaDeviceSynchronize();
-	reduce4<<<1, NumBlock / 2>>>(res_d, res_d);
+	reduce5<<<1, NumBlock / 2>>>(res_d, res_d);
 
 	cudaMemcpy(&res[0], &res_d[0], sizeof(int), cudaMemcpyDeviceToHost);
 
