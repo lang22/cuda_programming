@@ -80,6 +80,30 @@ __global__ void reduce2(int *nums, int *res) {
 	}
 }
 
+// Optimized with reducing idle threads to squeeze GPU labor!
+__global__ void reduce3(int *nums, int *res) {
+	__shared__ int my_part[BlockSize];
+	int bid = blockIdx.x, tid = threadIdx.x;
+
+	// Step1: copy data from GPU global memory to block-shared memory and DO ONE SUM UP!
+	int idx = bid * blockDim.x + tid;
+	my_part[tid] = nums[idx] + nums[idx + blockDim.x * gridDim.x];
+	__syncthreads(); // Wait for every thread finish copying
+
+	// Step2: do stride-index reduction from large to small, solve bank conflict!
+	for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+		if (tid + stride < blockDim.x) {
+			my_part[tid] += my_part[tid + stride];
+		}
+		__syncthreads();
+	}
+
+	if (tid == 0) {
+		res[bid] = my_part[0];
+		printf("%d, %d writing %d\n", blockIdx.x, threadIdx.x, my_part[0]);
+	}
+}
+
 int main() {
 	int nums[N];
 	for (int i = 0; i < N; i++) {
@@ -92,9 +116,15 @@ int main() {
 	cudaMalloc((void**)&res_d, sizeof(int) * NumBlock);
 	cudaMemcpy(nums_d, nums, sizeof(int) * N, cudaMemcpyHostToDevice);
 
-	reduce2<<<NumBlock, BlockSize>>>(nums_d, res_d);
-	cudaDeviceSynchronize(); // Wait the first reduction to finish
-	reduce2<<<1, NumBlock>>>(res_d, res_d);
+	// For reduce1 and reduce2
+//	reduce2<<<NumBlock, BlockSize>>>(nums_d, res_d);
+//	cudaDeviceSynchronize(); // Wait the first reduction to finish
+//	reduce2<<<1, NumBlock>>>(res_d, res_d);
+
+	// For reduce3 and reduce4
+	reduce3<<<NumBlock, BlockSize / 2>>>(nums_d, res_d);
+	cudaDeviceSynchronize();
+	reduce3<<<1, NumBlock / 2>>>(res_d, res_d);
 
 	cudaMemcpy(&res[0], &res_d[0], sizeof(int), cudaMemcpyDeviceToHost);
 
